@@ -1,0 +1,201 @@
+#InsightsController.java
+/**
+ * REST controller exposing campaign insight APIs.
+ *
+ * Thought Process:
+ * Keep HTTP handling separate from business logic.
+ */
+@RequiredArgsConstructor
+@RestController
+@Validated
+@RequestMapping("/api/v1/ad")
+public class InsightsController {
+
+    private final InsightsService insightsService;
+
+    /**
+     * Returns the total number of clicks for a campaign.
+     *
+     * @param campaignId Unique campaign identifier.
+     * @return Click metrics for the campaign.
+     */
+    @GetMapping("/{campaignId}/clicks")
+    public ResponseEntity<ClickResponse> getClicks(
+            @PathVariable @NotBlank String campaignId) {
+        ClickResponse response = insightsService.getClicks(campaignId);
+        return ResponseEntity.ok(response);
+    }
+}
+
+#InsightsService.java
+/**
+ * Business contract for retrieving campaign insights.
+ *
+ * Thought Process:
+ * Centralize business rules in one place.
+ */
+public interface InsightsService {
+    /**
+     * Returns click metrics for a campaign.
+     *
+     * @param campaignId unique campaign identifier
+     * @return click metrics
+     */
+    ClickResponse getClicks(String campaignId);
+}
+
+#InsightsServiceImpl.java
+/**
+ * Default implementation of the InsightsService.
+ *
+ * Thought Process:
+ * Encapsulates business logic while keeping the controller
+ * free from domain-specific decisions.
+ */
+@Service
+@RequiredArgsConstructor
+public class InsightsServiceImpl implements InsightsService {
+
+    private static final Logger log =
+            LoggerFactory.getLogger(InsightsServiceImpl.class);
+
+    private final InsightsRepository repository;
+
+    /**
+     * Fetches click metrics for the given campaign.
+     *
+     * @param campaignId Unique campaign identifier.
+     * @return ClickResponse containing campaign metrics.
+     * @throws CampaignNotFoundException if campaign does not exist.
+     */
+    @Override
+    public ClickResponse getClicks(String campaignId) {
+        log.info("Fetching click metrics for campaign: {}", campaignId);
+        Long clicks = repository.getClicks(campaignId);
+        if (clicks == null) {
+            log.warn("Campaign not found: {}", campaignId);
+            throw new CampaignNotFoundException(
+                    "Campaign '" + campaignId + "' not found."
+            );
+        }
+        log.info("Successfully fetched click metrics for campaign: {}", campaignId);
+        return ClickResponse.builder()
+                .campaignId(campaignId)
+                .clicks(clicks)
+                .build();
+    }
+}
+
+#InsightsRepository.java
+/**
+ * Repository abstraction for retrieving analytical metrics.
+ *
+ * Thought Process:
+ * Hide the storage implementation behind an abstraction.
+ */
+public interface InsightsRepository {
+    Long getClicks(String campaignId);
+}
+
+#MockInsightsRepository.java
+/**
+ * Mock repository used for the assignment.
+ *
+ * Thought Process:
+ * In production this implementation would query ClickHouse.
+ * The mock keeps the assignment focused on architecture
+ * and code structure.
+ */
+@Repository
+public class MockInsightsRepository implements InsightsRepository {
+
+    private final Map<String, Long> data = Map.of(
+            "campaign-101", 1200L,
+            "campaign-102", 540L,
+            "campaign-103", 9821L
+    );
+
+    @Override
+    public Long getClicks(String campaignId) {
+        log.debug("Retrieving click metrics for campaign: {}", campaignId);
+        return data.get(campaignId);
+    }
+}
+
+#ClickResponse.java
+ /**
+ * Thought Process:
+ * DTOs expose only the data required by API consumers.
+ */
+@Data
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
+public class ClickResponse {
+    private String campaignId;
+    private Long clicks;
+}
+
+#ErrorResponse.java
+@Data
+@Builder
+@AllArgsConstructor
+@NoArgsConstructor
+public class ErrorResponse {
+    private Instant timestamp;
+    private int status;
+    private String error;
+    private String message;
+}
+
+#CampaignNotFoundException.java
+/**
+ * Thought Process:
+ * Domain-specific exception improves readability
+ * and centralized error handling.
+ */
+public class CampaignNotFoundException extends RuntimeException {
+
+    public CampaignNotFoundException(String message) {
+        super(message);
+    }
+}
+
+#GlobalExceptionHandler.java
+/**
+ * Thought Process:
+ * Convert internal exceptions into meaningful
+ * HTTP responses for API consumers.
+ */
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    @ExceptionHandler(CampaignNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handle(CampaignNotFoundException ex) {
+      return ResponseEntity.status(HttpStatus.NOT_FOUND)
+              .body(
+                  ErrorResponse.builder()
+                          .timestamp(Instant.now())
+                          .status(404)
+                          .error("Campaign Not Found")
+                          .message(ex.getMessage())
+                          .build()
+              );
+    }
+}
+
+/api/v1/ad/campaign-101/clicks
+Response:
+{
+  "campaignId":"campaign-101",
+  "clicks":1200
+}
+
+Invalid request:
+/api/v1/ad/campaign-999/clicks
+{
+    "timestamp": "...",
+    "status": 404,
+    "error": "Campaign Not Found",
+    "message": "Campaign 'campaign-999' not found."
+}
