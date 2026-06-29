@@ -1,25 +1,17 @@
 # RetailStream
 
 ## Business Context
-
 RetailStream is a real-time event streaming platform designed for online shopping networks such as Amazon, Flipkart and Walmart Connect.
-
 The objective of this platform is to collect these events, process them with low latency and continuously generate business insights that can be consumed through APIs and dashboards.
 
 
 ## Problem Statement
-
 The platform should be capable of ingesting millions of customer interaction events generated across multiple retailer websites.
-
 These events should be processed in near real time to generate business metrics such as impressions, clicks, CTR and conversion rate. Along with real-time analytics, the platform should also support historical reporting for business analysis.
-
 Since the platform serves multiple retailers, it should remain highly available, horizontally scalable and provide proper tenant isolation.
 
 
 ## Functional Requirements
-
-The platform should support the following capabilities:
-
 * Collect customer interaction events from multiple retailer websites.
 * Process incoming events with minimal latency.
 * Continuously compute business metrics.
@@ -29,293 +21,177 @@ The platform should support the following capabilities:
 
 
 ## Non-Functional Requirements
-
-The design focuses on the following engineering goals.
-
-**Low Latency**
-
-Customer interactions should be reflected on the dashboard within a few seconds.
-
-**Scalability**
-
-Each layer of the system should scale independently as traffic grows.
-
-**High Availability**
-
-The platform should continue serving requests even if individual components become unavailable.
-
-**Fault Tolerance**
-
-Failures should not result in event loss, and the platform should be able to recover automatically.
-
-**Durability**
-
-Raw events should be retained so they can be replayed or analysed later if required.
-
-**Multi-Tenancy**
-
-A single deployment should support multiple retailers while ensuring complete data isolation.
-
-**Observability**
-
-Every component should expose metrics, logs and health information for monitoring and troubleshooting.
+Low Latency: Customer interactions should be reflected on the dashboard within a few seconds.
+Scalability: Each layer of the system should scale independently as traffic grows.
+High Availability: The platform should continue serving requests even if individual components become unavailable.
+Fault Tolerance: Failures should not result in event loss, and the platform should be able to recover automatically.
+Durability: Raw events should be retained so they can be replayed or analysed later if required.
+Multi-Tenancy: A single deployment should support multiple retailers while ensuring complete data isolation.
+Observability: Every component should expose metrics, logs and health information for monitoring and troubleshooting.
 
 
 ## Capacity Estimation
-
-The assignment does not specify production traffic, so the following assumptions are used for this design.
-
 * Daily Active Users: 10 Million
-* Events Generated per Day: 100 Million
+* Events Generated per Day: 100 Million = 10^8
 * Average Event Size: 1 KB
-* Peak Traffic: Up to 3–5× during promotional events such as Black Friday
+* Peak Traffic: Up to 3-5X during promotional events such as Black Friday
 
 Based on these assumptions:
-
-* Average Throughput ≈ 1,150 events/second
-* Peak Throughput ≈ 3,500 events/second
-* Daily Raw Data ≈ 100 GB
-* Yearly Raw Data ≈ 36 TB
-
+* Average Throughput = 10^8/10^5 =  1K events/second
+* Peak Throughput = 3K events/second
+* Daily Raw Data = 100 GB
+* Yearly Raw Data = 36 TB
 Since event data continuously grows, storing everything inside the analytical database would become expensive and impact query performance. Therefore, raw events will be archived in object storage while only recent analytical data will be retained in the serving layer.
 
 
 # High Level Architecture and Data Flow
 
 The platform follows an event-driven architecture where each component is responsible for a single responsibility. This allows ingestion, processing and querying to scale independently without affecting each other.
-
-The complete flow is as follows.
-
 ### Step 1 - Event Generation
-
 Customer interactions such as product views, clicks, add-to-cart actions and purchases are captured on the retailer website using a JavaScript SDK. Every interaction generates an event that contains information such as tenant ID, campaign ID, user ID, event type and timestamp.
 
 ### Step 2 - API Gateway
-
 All incoming events first reach the API Gateway. This layer is responsible for authentication, rate limiting and request routing before forwarding the request to the Event Collector service.
 
 ### Step 3 - Event Collector
-
 The Event Collector acts as the entry point into the platform. Before publishing an event, it performs schema validation, tenant identification, metadata enrichment and basic deduplication checks. This ensures that downstream systems always receive well-formed events.
-
 Once validated, the event is published to Kafka.
 
 ### Step 4 - Event Streaming
-
 Kafka acts as the central event backbone of the platform. Every event published to Kafka becomes available to multiple downstream consumers. This allows different processing pipelines to work independently without increasing the load on the event producer.
-
 The same event is consumed by three independent pipelines.
 
 ### Real-time Processing Pipeline
-
 The first pipeline is responsible for near real-time analytics.
-
 Flink consumes events from Kafka and performs operations such as filtering, session tracking, window aggregation and metric computation. The computed metrics are stored in ClickHouse.
-
 The Insights API queries ClickHouse and exposes business metrics such as impressions, clicks and CTR to the dashboard with very low latency.
 
 ### Historical Storage Pipeline
-
 Every raw event is also stored in Amazon S3. This provides durable long-term storage for historical reporting, replay and auditing. Older events can be moved to cheaper storage classes using lifecycle policies without affecting the serving layer.
 
 ### Batch Processing Pipeline
-
 Spark periodically processes historical events stored in S3. This pipeline is responsible for handling late-arriving events, backfilling historical data and recomputing aggregates whenever required. The updated aggregates are written back to ClickHouse.
-
 Separating real-time processing, historical storage and batch computation ensures that one workload does not impact the others. For example, a long-running Spark job will not affect dashboard latency, and heavy dashboard traffic will not impact event ingestion.
 
 
 # Technology Choices and Design Decisions
 
 ## Event Collector
-
-The Event Collector acts as the entry point into the platform after the API Gateway.
-
-Instead of allowing the API Gateway to publish events directly to Kafka, I introduced an Event Collector service. This keeps the gateway lightweight and provides a dedicated place for business validations before events enter the streaming platform.
-
-The Event Collector performs schema validation, tenant identification, event enrichment and basic deduplication. Once an event passes these validations, it is published to Kafka.
-
-An alternative would have been to let the API Gateway publish directly to Kafka. Although this reduces one network hop, it mixes infrastructure concerns with business logic and makes future validations harder to maintain.
-
-Adding the Event Collector introduces one additional service to manage, but it keeps responsibilities clearly separated and makes the platform easier to evolve.
+* The Event Collector acts as the entry point into the platform after the API Gateway.
+* Instead of allowing the API Gateway to publish events directly to Kafka, I introduced an Event Collector service. This keeps the gateway lightweight and provides a dedicated place for business validations before events enter the streaming platform.
+* The Event Collector performs schema validation, tenant identification, event enrichment and basic deduplication. Once an event passes these validations, it is published to Kafka.
+* An alternative would have been to let the API Gateway publish directly to Kafka. Although this reduces one network hop, it mixes infrastructure concerns with business logic and makes future validations harder to maintain.
+* Adding the Event Collector introduces one additional service to manage, but it keeps responsibilities clearly separated and makes the platform easier to evolve.
 
 
 ## Kafka
-
-The platform receives a continuous stream of customer events, and traffic can increase significantly during promotional campaigns.
-
-The ingestion layer needs to absorb traffic spikes, retain events safely and allow multiple downstream systems to process the same event independently.
-
-Kafka is well suited for this requirement because it stores events as a durable log, allows producers and consumers to scale independently and supports replay whenever downstream systems need to recover.
-
-An alternative would be RabbitMQ or another traditional message queue. While queues work well for request processing, this platform is fundamentally an event streaming problem where the same event needs to be consumed by multiple independent pipelines.
-
-The trade-off is that Kafka introduces additional operational complexity through broker management, partitioning and replication. However, that complexity is justified for a high-volume streaming platform.
+* The platform receives a continuous stream of customer events, and traffic can increase significantly during promotional campaigns.
+* The ingestion layer needs to absorb traffic spikes, retain events safely and allow multiple downstream systems to process the same event independently.
+* Kafka is well suited for this requirement because it stores events as a durable log, allows producers and consumers to scale independently and supports replay whenever downstream systems need to recover.
+* An alternative would be RabbitMQ or another traditional message queue. While queues work well for request processing, this platform is fundamentally an event streaming problem where the same event needs to be consumed by multiple independent pipelines.
+* The trade-off is that Kafka introduces additional operational complexity through broker management, partitioning and replication. However, that complexity is justified for a high-volume streaming platform.
 
 
 ## Flink
-
-Once events enter Kafka, they need to be processed continuously to generate near real-time business metrics.
-
-Flink performs event filtering, session tracking, window aggregation and metric computation as events arrive. This allows dashboards to remain close to real time without waiting for scheduled batch jobs.
-
-Spark Structured Streaming was also considered. While Spark provides streaming capabilities, Flink offers stronger support for continuous stateful stream processing and event-time semantics, making it a better fit for this use case.
-
-The trade-off is that Flink requires checkpoint management and state maintenance, making it operationally more complex than simple batch processing.
+* Once events enter Kafka, they need to be processed continuously to generate near real-time business metrics.
+* Flink performs event filtering, session tracking, window aggregation and metric computation as events arrive. This allows dashboards to remain close to real time without waiting for scheduled batch jobs.
+* Spark Structured Streaming was also considered. While Spark provides streaming capabilities, Flink offers stronger support for continuous stateful stream processing and event-time semantics, making it a better fit for this use case.
+* The trade-off is that Flink requires checkpoint management and state maintenance, making it operationally more complex than simple batch processing.
 
 
 ## ClickHouse
-
-The dashboard serves analytical queries over a very large volume of data. Using a traditional OLTP database for these queries would eventually become a bottleneck.
-
-ClickHouse is designed for analytical workloads and performs aggregation queries efficiently over large datasets. It stores the aggregated metrics generated by Flink and serves them to the Insights API.
-
-PostgreSQL or MySQL could also store this data, but they are better suited for transactional workloads than large-scale analytical queries.
-
-The trade-off is that ClickHouse is not intended for transactional updates. It is introduced only as the analytical serving layer.
+* The dashboard serves analytical queries over a very large volume of data. Using a traditional OLTP database for these queries would eventually become a bottleneck.
+* ClickHouse is designed for analytical workloads and performs aggregation queries efficiently over large datasets. It stores the aggregated metrics generated by Flink and serves them to the Insights API.
+* PostgreSQL or MySQL could also store this data, but they are better suited for transactional workloads than large-scale analytical queries.
+* The trade-off is that ClickHouse is not intended for transactional updates. It is introduced only as the analytical serving layer.
 
 
 ## Amazon S3
-
-Raw events continue to grow over time and are valuable for historical reporting, replay and auditing.
-
-Instead of retaining every event inside ClickHouse, raw events are archived in Amazon S3. This provides durable and cost-effective storage while keeping the analytical database small and efficient.
-
-An alternative would be storing everything inside the analytical database. This increases storage cost and gradually impacts query performance.
-
-The trade-off is that historical queries over archived data have higher latency compared to querying recent analytical data.
+* Raw events continue to grow over time and are valuable for historical reporting, replay and auditing.
+* Instead of retaining every event inside ClickHouse, raw events are archived in Amazon S3. This provides durable and cost-effective storage while keeping the analytical database small and efficient.
+* An alternative would be storing everything inside the analytical database. This increases storage cost and gradually impacts query performance.
+* The trade-off is that historical queries over archived data have higher latency compared to querying recent analytical data.
 
 
 ## Spark
-
-Real-time processing alone is not sufficient because events can arrive late or historical metrics may need to be recomputed.
-
-Spark periodically processes historical data stored in S3 to perform backfilling, handle late-arriving events and recompute aggregates whenever required.
-
-An alternative would be to recompute everything using the real-time pipeline itself. That would unnecessarily increase the workload on the streaming layer.
-
-Separating batch processing from real-time processing keeps both pipelines simpler and allows them to scale independently.
+* Real-time processing alone is not sufficient because events can arrive late or historical metrics may need to be recomputed.
+* Spark periodically processes historical data stored in S3 to perform backfilling, handle late-arriving events and recompute aggregates whenever required.
+* An alternative would be to recompute everything using the real-time pipeline itself. That would unnecessarily increase the workload on the streaming layer.
+* Separating batch processing from real-time processing keeps both pipelines simpler and allows them to scale independently.
 
 
 ## Insights API
-
-The dashboard never queries ClickHouse directly.
-
-Instead, all analytical requests go through an Insights API layer. This layer hides storage details from clients and provides a stable interface for retrieving business metrics.
-
-It also becomes the right place to implement authentication, request validation, caching, rate limiting and future business logic without exposing database details to consumers.
-
-This additional layer introduces another service, but it keeps the overall architecture loosely coupled and easier to evolve over time.
+* The dashboard never queries ClickHouse directly.
+* Instead, all analytical requests go through an Insights API layer. This layer hides storage details from clients and provides a stable interface for retrieving business metrics.
+* It also becomes the right place to implement authentication, request validation, caching, rate limiting and future business logic without exposing database details to consumers.
+* This additional layer introduces another service, but it keeps the overall architecture loosely coupled and easier to evolve over time.
 
 
 # API Design
-
-The dashboard interacts with the platform through the Insights API. Instead of querying the analytical database directly, all requests pass through this API layer. This keeps the storage implementation hidden from clients and provides a single place for authentication, validation and future business logic.
-
-The following APIs are exposed.
-
-GET /ad/{campaignId}/clicks -> Returns the total number of customers who clicked a particular advertisement.
-
-GET /ad/{campaignId}/impressions -> Returns the total number of impressions served for a campaign.
-
-GET /ad/{campaignId}/clickToBasket -> Returns the number of users who added a product to the cart after clicking the advertisement.
-
-Each API also supports optional filters such as: retailerId, startTime, endTime, granularity (hour/day/week), timezone
-
-The Insights API only serves pre-computed metrics from ClickHouse. It never performs heavy aggregations during request execution, ensuring consistently low response times even under high traffic.
+* The dashboard interacts with the platform through the Insights API. Instead of querying the analytical database directly, all requests pass through this API layer. This keeps the storage implementation hidden from clients and provides a single place for authentication, validation and future business logic.
+* GET /ad/{campaignId}/clicks -> Returns the total number of customers who clicked a particular advertisement.
+* GET /ad/{campaignId}/impressions -> Returns the total number of impressions served for a campaign.
+* GET /ad/{campaignId}/clickToBasket -> Returns the number of users who added a product to the cart after clicking the advertisement.
+* Each API also supports optional filters such as: retailerId, startTime, endTime, granularity (hour/day/week), timezone
+* The Insights API only serves pre-computed metrics from ClickHouse. It never performs heavy aggregations during request execution, ensuring consistently low response times even under high traffic.
 
 
 # Multi-Tenancy
-
-Every event contains a tenant identifier, which is added by the Event Collector before the event enters Kafka. This tenant identifier flows through the entire processing pipeline and is stored together with every aggregated metric.
-
-This allows complete logical isolation between retailers while still using shared infrastructure.
-
-Tenant validation is enforced at the API layer so that a retailer can access only its own analytical data.
-
-Partitioning Kafka events using the tenant identifier also helps distribute traffic evenly while preserving ordering within each tenant wherever required.
+* Every event contains a tenant identifier, which is added by the Event Collector before the event enters Kafka. This tenant identifier flows through the entire processing pipeline and is stored together with every aggregated metric.
+* This allows complete logical isolation between retailers while still using shared infrastructure.
+* Tenant validation is enforced at the API layer so that a retailer can access only its own analytical data.
+* Partitioning Kafka events using the tenant identifier also helps distribute traffic evenly while preserving ordering within each tenant wherever required.
 
 
 # Scalability
-
-The Event Collector is deployed behind a load balancer and additional instances can be added during traffic spikes.
-
-Kafka scales by increasing partitions, allowing producers and consumers to process events in parallel.
-
-Flink jobs can increase parallelism independently based on event volume.
-
-ClickHouse can be deployed with replicas and distributed tables to support increasing analytical query traffic.
-
-Since ingestion, stream processing, storage and querying are independent layers, scaling one component does not require scaling the entire platform.
+* The Event Collector is deployed behind a load balancer and additional instances can be added during traffic spikes.
+* Kafka scales by increasing partitions, allowing producers and consumers to process events in parallel.
+* Flink jobs can increase parallelism independently based on event volume.
+* ClickHouse can be deployed with replicas and distributed tables to support increasing analytical query traffic.
+* Since ingestion, stream processing, storage and querying are independent layers, scaling one component does not require scaling the entire platform.
 
 
 # Failure Handling
-
-If an Event Collector instance becomes unavailable, traffic is automatically routed to another healthy instance through the load balancer.
-
-Kafka stores events durably. If a downstream consumer becomes unavailable, events remain in Kafka until the consumer recovers and resumes processing.
-
-Flink periodically creates checkpoints for its processing state. If a Flink node fails, processing resumes from the latest checkpoint instead of restarting from the beginning.
-
-ClickHouse is deployed with replication to improve availability. If a replica becomes unavailable, analytical queries continue to be served by the remaining replicas.
-
-Since all raw events are archived in Amazon S3, historical data can always be replayed to rebuild analytical tables whenever necessary.
+* If an Event Collector instance becomes unavailable, traffic is automatically routed to another healthy instance through the load balancer.
+* Kafka stores events durably. If a downstream consumer becomes unavailable, events remain in Kafka until the consumer recovers and resumes processing.
+* Flink periodically creates checkpoints for its processing state. If a Flink node fails, processing resumes from the latest checkpoint instead of restarting from the beginning.
+* ClickHouse is deployed with replication to improve availability. If a replica becomes unavailable, analytical queries continue to be served by the remaining replicas.
+* Since all raw events are archived in Amazon S3, historical data can always be replayed to rebuild analytical tables whenever necessary.
 
 
 # Monitoring and Observability
-
-The following metrics would be monitored.
-
-API Gateway & Event Collector: Requests per second, API latency (P95/P99), Error rate, Validation failures, Authentication failures
-
-Kafka: Producer throughput, Consumer lag, Broker health, Partition availability, Message retention, Disk utilization
-
-Flink: Processing latency, Checkpoint failures, Watermark delay, Failed jobs, CPU and memory utilization
-
-ClickHouse: Query latency, Active connections, CPU and memory utilization, Storage usage, Slow queries
-
-Spark: Job success rate, Job duration, Failed batch executions
-
-The platform can use Prometheus for metrics collection, Grafana for dashboards and alerting, and a centralized logging solution for troubleshooting.
+* API Gateway & Event Collector: Requests per second, API latency (P95/P99), Error rate, Validation failures, Authentication failures
+* Kafka: Producer throughput, Consumer lag, Broker health, Partition availability, Message retention, Disk utilization
+* Flink: Processing latency, Checkpoint failures, Watermark delay, Failed jobs, CPU and memory utilization
+* ClickHouse: Query latency, Active connections, CPU and memory utilization, Storage usage, Slow queries
+* Spark: Job success rate, Job duration, Failed batch executions
+* The platform can use Prometheus for metrics collection, Grafana for dashboards and alerting, and a centralized logging solution for troubleshooting.
 
 
 # Cost Optimization
-
-Since the platform continuously receives events, storage cost increases over time. Instead of retaining all historical data in the analytical database, only recent aggregated data is stored in ClickHouse.
-
-Raw events are archived in Amazon S3, where lifecycle policies can automatically move older data to lower-cost storage classes.
-
-Independent scaling also helps optimize infrastructure cost. During periods of low traffic, only the ingestion layer may require fewer instances, while the analytical layer continues operating independently. This avoids scaling the entire platform unnecessarily.
+* Since the platform continuously receives events, storage cost increases over time. Instead of retaining all historical data in the analytical database, only recent aggregated data is stored in ClickHouse.
+* Raw events are archived in Amazon S3, where lifecycle policies can automatically move older data to lower-cost storage classes.
+* Independent scaling also helps optimize infrastructure cost. During periods of low traffic, only the ingestion layer may require fewer instances, while the analytical layer continues operating independently. This avoids scaling the entire platform unnecessarily.
 
 
 # Design Trade-offs
-
-Kafka improves durability, scalability and replay capability, but it also introduces additional operational complexity through broker management and partitioning.
-
-Flink enables near real-time analytics but requires checkpoint management and state recovery.
-
-ClickHouse provides excellent analytical query performance but is not designed for transactional workloads.
-
-Separating real-time processing, historical storage and batch processing increases the number of components in the system. Although this makes deployment slightly more complex, it keeps each workload independent and prevents one pipeline from affecting another.
-
-The platform prioritizes near real-time analytics over absolute real-time consistency. A small delay of a few seconds is acceptable for analytical dashboards and allows the system to remain highly scalable.
+* Kafka improves durability, scalability and replay capability, but it also introduces additional operational complexity through broker management and partitioning.
+* Flink enables near real-time analytics but requires checkpoint management and state recovery.
+* ClickHouse provides excellent analytical query performance but is not designed for transactional workloads.
+* Separating real-time processing, historical storage and batch processing increases the number of components in the system. Although this makes deployment slightly more complex, it keeps each workload independent and prevents one pipeline from affecting another.
+* The platform prioritizes near real-time analytics over absolute real-time consistency. A small delay of a few seconds is acceptable for analytical dashboards and allows the system to remain highly scalable.
 
 
 # Future Enhancements
-
-Some possible future enhancements include:
-
-Real-time anomaly detection for unusual traffic or campaign behaviour.
-Dashboard-level caching for frequently accessed reports.
+* Real-time anomaly detection for unusual traffic or campaign behaviour.
+* Dashboard-level caching for frequently accessed reports.
 
 # Deployment Overview
-
-LB -> API gateway(2 pods) -> Event Collector (2 pods) -> Kafka Cluster(3 Brokers) -> Flink cluster(Job manager) | S3 (Raw data) | Spark (Batch Processing) -> Clickhouse cluster(Replica) -> Insights API (2 pods) -> Dashboard Layer
+* LB -> API gateway(2 pods) -> Event Collector (2 pods) -> Kafka Cluster(3 Brokers) -> Flink cluster(Job manager) | S3 (Raw data) | Spark (Batch Processing) -> Clickhouse cluster(Replica) -> Insights API (2 pods) -> Dashboard Layer
 
 Auto Scaling Strategy
-
-• Event Collector scales based on CPU and request throughput.
-• Kafka scales by increasing partitions and brokers.
-• Flink scales by increasing task parallelism.
-• Insights API scales based on incoming dashboard traffic.
-• ClickHouse scales by adding replicas for read-heavy workloads.
+* Event Collector scales based on CPU and request throughput.
+* Kafka scales by increasing partitions and brokers.
+* Flink scales by increasing task parallelism.
+* Insights API scales based on incoming dashboard traffic.
+* ClickHouse scales by adding replicas for read-heavy workloads.
